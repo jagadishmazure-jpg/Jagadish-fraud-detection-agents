@@ -16,9 +16,11 @@ deniable; the damage comes later.
 ~30-minute window, from a single device the account has never used.
 
 **Detector:** `detect_card_testing` — ≥10 sub-$5 ecom debits within any
-rolling 30-minute window. Per-transaction scoring independently flags
-the velocity (often 100x+ the account's normal rate) and the micro-auth
-merchant risk.
+rolling 30-minute window. Per-transaction scoring adds velocity,
+new-device and micro-auth reasons to each probe, but in the seeded demo
+no single probe crosses the 55-point flag threshold (the highest scores
+50.5). The pattern detector is what catches card testing, which is why
+the two layers exist side by side.
 
 **Investigator note:** the probe merchants and device are the pivot —
 search them across accounts to find the rest of the compromised batch.

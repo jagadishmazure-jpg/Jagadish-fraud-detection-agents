@@ -17,7 +17,6 @@ from fraud import (
     inject_money_mule,
     score_transaction,
 )
-from fraud.detect import AccountBaseline
 
 
 @pytest.fixture()

@@ -8,9 +8,8 @@ history (never from the stream being scored).
 
 from __future__ import annotations
 
-import math
 import statistics
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
