@@ -5,7 +5,7 @@
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-**Financial fraud detection from transaction stream to analyst verdict: explainable scoring, four signature detectors, evidence-cited cases and a prioritised review queue.**
+**Financial fraud detection from transaction stream to analyst verdict: explainable scoring, five signature detectors including a cross-account mule-ring graph, evidence-cited cases, template triage narratives, a measured eval harness, and an approval-gated feedback loop.**
 
 > Personal learning and portfolio project. Everything runs offline on synthetic,
 > fictional data with no API keys. Nothing is deployed. Numbers in this README
@@ -15,6 +15,7 @@
 
 - End-to-end fraud operations pipeline on a seeded synthetic bank: baselines, per-transaction risk scoring with reasons, pattern detectors, case assembly, SLA-tracked queue, hash-chained ledger.
 - Measured on the seeded demo: 4 of 4 injected patterns detected, 0 false positives on 8 clean accounts, and an honest gap (card testing is caught by the pattern layer, not the per-transaction score).
+- New in this betterment: a mule-ring graph detector (shared counterparties, shared devices, coordinated pass-through) that stays silent on payroll-style fan-in; a labelled-set eval harness with per-pattern precision/recall/F1 and Wilson intervals (macro F1 1.00 on the 12-account synthetic set, with intervals showing the small-sample uncertainty); template triage narratives whose every claim is checked against the case record; and a feedback loop where analyst verdicts propose threshold changes that only a named-person approval can apply, with the effect measured on a held-out half.
 - Pure Python, deterministic, offline tests; CI with lint, CodeQL, gitleaks and documented-output drift checks.
 
 ## Purpose
@@ -33,12 +34,19 @@ flowchart LR
     TX --> SC["score_transaction<br/>weighted reasons, flag >= 55"]
     BL --> SC
     SC --> PD["PatternDetector<br/>4 signatures"]
+    TX --> RG["RingDetector<br/>graph: accounts, counterparties, devices"]
     PD --> CS["assemble_case<br/>timeline, exposure, priority"]
+    RG --> CS
     SC --> CS
     CS --> Q["ReviewQueue<br/>critical first, SLA"]
+    CS --> NR["render_narrative<br/>template, claims checked"]
     Q --> AN(["analyst verdict"])
-    CS --> L[("FraudLedger<br/>hash chain")]
+    AN --> FB["FeedbackLoop<br/>verdicts propose, approval applies"]
+    FB --> L[("FraudLedger<br/>hash chain")]
+    CS --> L
     AN --> L
+    EV["eval harness<br/>labelled set, P/R/F1, Wilson"] -.-> PD
+    EV -.-> RG
 ```
 
 ## How it works
@@ -49,7 +57,8 @@ Two layers look at the same stream:
    each transaction with the account's clean-history baseline. Velocity (30),
    amount z-score (30), new geo/device (25) and channel risk add up to a score;
    55 or more flags it. Each point comes with a sentence of reason.
-2. **Pattern detectors** look at windows of an account's history:
+2. **Pattern detectors** look at windows of an account's history, and one
+looks across accounts:
 
 | Pattern | Signature | Severity |
 |---|---|---|
@@ -57,11 +66,31 @@ Two layers look at the same stream:
 | Account takeover | a probe of $2 or less from a new device and geo, then 4+ purchases of $200+ within 6 hours | critical |
 | Money mule | credits from 3+ counterparties, then 70%+ withdrawn at ATMs within 24 hours | critical |
 | Merchant collusion | 6+ identical round-dollar charges at one merchant in 7 days | medium |
+| Mule ring | 3+ accounts sharing inbound counterparties, a shared device, and 50%+ pass-through within 48 hours, scoring 70+ on the ring graph | critical |
 
-Cases combine both layers, compute exposure, and get a priority. The queue sorts
+Cases combine the layers, compute exposure, and get a priority. The queue sorts
 critical first, tracks SLA hours, and records assignment and verdict. Baselines
 are built from clean history only, so injected fraud cannot teach the model that
 fraud is normal. Detail: [docs/fraud-patterns.md](docs/fraud-patterns.md).
+
+3. **Measured evaluation** (`fraud/eval.py`, [docs/eval.md](docs/eval.md)):
+a fixed 12-account labelled set — the four original patterns, a 4-account
+mule ring, and 4 benign payroll-style accounts — scored per pattern with
+precision, recall, F1, and Wilson intervals. The intervals are the honest
+part: a perfect score on one positive account still carries a wide interval.
+
+4. **Template triage narratives** (`fraud/narratives.py`,
+[docs/triage-narratives.md](docs/triage-narratives.md)): one paragraph per
+case, generated from a template filled only with case fields, labelled as
+template output, with every amount, timestamp, and account id re-checked
+against the case record. No model is called.
+
+5. **Approval-gated feedback** (`fraud/feedback.py`,
+[docs/feedback-loop.md](docs/feedback-loop.md)): analyst verdicts propose
+threshold changes (5+ verdicts, precision below 0.5), a named-person,
+single-use, scoped, expiring approval applies them, the change is
+hash-chained to the ledger, and its effect is measured on the held-out
+half of the labelled set. Nothing auto-tunes.
 
 ## Real code and output
 
@@ -163,7 +192,7 @@ Test suite size (real collection, re-checked in CI):
 
 <!-- run: python scripts/count_tests.py -->
 ```text
-35 tests collected
+75 tests collected
 ```
 <!-- /run -->
 
@@ -177,9 +206,10 @@ Test suite size (real collection, re-checked in CI):
 
 ## Limitations
 
-- The 4/4 detection result is on patterns this repo injects itself; it is a correctness check, not a real-world detection rate.
+- The 4/4 detection result is on patterns this repo injects itself; it is a correctness check, not a real-world detection rate. The eval harness says the same thing with denominators: macro F1 1.00 on 12 synthetic accounts, with Wilson intervals that stay wide because four patterns have one positive account each.
 - Card-testing probes score at most 50.5 per transaction, below the 55 flag threshold; only the pattern detector catches them.
-- Thresholds and weights are hand-set, not trained or calibrated on labelled data.
+- Thresholds and weights are hand-set, not trained or calibrated on labelled data. The feedback loop moves them only by fixed steps behind an approval, and its measured effect is on the synthetic held-out half only.
+- Narratives are templates, not model output: they cannot phrase anything the case record does not already contain, which is the point, and also the ceiling.
 - Everything runs in memory on one machine; no streaming infrastructure.
 
 ## Built vs planned
@@ -191,7 +221,11 @@ Test suite size (real collection, re-checked in CI):
 | Four signature detectors | Built | `fraud/detect.py::PatternDetector` |
 | Case assembly, priority, review queue with SLA | Built | `fraud/cases.py`, `fraud/queue.py` |
 | Hash-chained audit ledger | Built | `fraud/audit.py` |
-| Precision/recall on a large labelled synthetic set | Planned | not started |
+| Mule-ring graph detection with benign fan-in negative controls | Built | `fraud/rings.py`, `docs/fraud-patterns.md` |
+| Precision/recall/F1 eval harness with Wilson intervals on a labelled synthetic set | Built | `fraud/eval.py`, `docs/eval.md`, `examples/eval_report.py` |
+| Template triage narratives with evidence-groundedness checks | Built | `fraud/narratives.py`, `docs/triage-narratives.md` |
+| Approval-gated feedback loop with measured held-out effect | Built | `fraud/feedback.py`, `docs/feedback-loop.md` |
+| Precision/recall on a large labelled synthetic set (hundreds of accounts per pattern) | Planned | small 12-account set only, see `docs/eval.md` |
 | Streaming ingestion (Event Hubs) and ML scorer | Planned | docs/implementation-guide.md |
 | Case-management UI | Planned | not started |
 
@@ -213,6 +247,9 @@ run; it is a plan.
 ## Documentation
 
 - [Fraud patterns](docs/fraud-patterns.md)
+- [Measured evaluation](docs/eval.md)
+- [Template triage narratives](docs/triage-narratives.md)
+- [Human-feedback loop](docs/feedback-loop.md)
 - [Implementation guide (Azure)](docs/implementation-guide.md)
 - [Interview points](docs/interview-points.md)
 - [Security policy](SECURITY.md)
@@ -221,12 +258,17 @@ run; it is a plan.
 
 ```
 fraud/
-  transactions.py  seeded multi-account stream + 4 pattern injectors
+  transactions.py  seeded multi-account stream + 6 pattern injectors
   detect.py        baselines, per-transaction scoring, PatternDetector
+  rings.py         cross-account mule-ring graph detector
+  eval.py          labelled-set eval: P/R/F1, Wilson intervals
+  narratives.py    template triage narratives + groundedness checks
+  feedback.py      verdicts, approval gate, measured threshold changes
   cases.py         case assembly, exposure, priority
   queue.py         analyst worklist, assignment, verdict, SLA
   audit.py         hash-chained ledger
-examples/demo.py   the run shown above
+examples/demo.py        the run shown above
+examples/eval_report.py measured eval table (docs/eval.md)
 tests/             offline pytest suite
 ```
 

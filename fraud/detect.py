@@ -50,12 +50,15 @@ def _zscore(value: float, mean: float, std: float) -> float:
 
 
 def score_transaction(txn: Dict, baseline: AccountBaseline,
-                      recent: Optional[List[Dict]] = None) -> Dict:
+                      recent: Optional[List[Dict]] = None,
+                      flag_threshold: float = 55.0) -> Dict:
     """Score one transaction 0-100 against the account baseline.
 
     Signals (weights): velocity 30, amount 30, geo/device novelty 25,
     merchant risk 15. `recent` is the account's recent stream, used for
     the velocity signal (transactions in the trailing hour).
+    `flag_threshold` is the flag line (default 55.0); the feedback loop
+    may move it, but only through an approved threshold change.
     """
     reasons: List[str] = []
     signals: Dict[str, float] = {}
@@ -114,7 +117,7 @@ def score_transaction(txn: Dict, baseline: AccountBaseline,
         "score": score,
         "signals": {k: round(v, 3) for k, v in signals.items()},
         "reasons": reasons,
-        "flagged": score >= 55.0,
+        "flagged": score >= flag_threshold,
     }
 
 
@@ -132,8 +135,9 @@ class PatternDetector:
     def _account_txns(self, account_id: str) -> List[Dict]:
         return [t for t in self.txns if t["account_id"] == account_id]
 
-    def detect_card_testing(self, account_id: str) -> Optional[Dict]:
-        """ >=10 sub-$5 ecom auths within any 30-minute window. """
+    def detect_card_testing(self, account_id: str,
+                            min_count: int = 10) -> Optional[Dict]:
+        """ >=min_count sub-$5 ecom auths within any 30-minute window. """
         txns = [t for t in self._account_txns(account_id)
                 if t["channel"] == "ecom" and t["amount"] < 5
                 and t["direction"] == "debit"]
@@ -142,7 +146,7 @@ class PatternDetector:
             window = [x for x in txns[i:]
                       if datetime.fromisoformat(x["timestamp"]) - start
                       <= timedelta(minutes=30)]
-            if len(window) >= 10:
+            if len(window) >= min_count:
                 return {
                     "pattern": "card_testing",
                     "account_id": account_id,
@@ -184,8 +188,10 @@ class PatternDetector:
                 }
         return None
 
-    def detect_money_mule(self, account_id: str) -> Optional[Dict]:
-        """Fan-in credits from 3+ counterparties, then rapid ATM cash-out."""
+    def detect_money_mule(self, account_id: str,
+                          cashout_ratio: float = 0.7) -> Optional[Dict]:
+        """Fan-in credits from 3+ counterparties, then rapid ATM cash-out
+        of at least `cashout_ratio` of inflow within 24h."""
         txns = self._account_txns(account_id)
         credits = [t for t in txns if t["direction"] == "credit"]
         counterparties = {t["merchant"] for t in credits}
@@ -199,7 +205,7 @@ class PatternDetector:
                    <= timedelta(hours=24)]
         inflow = sum(t["amount"] for t in credits)
         outflow = sum(t["amount"] for t in cashout)
-        if cashout and outflow >= 0.7 * inflow:
+        if cashout and outflow >= cashout_ratio * inflow:
             return {
                 "pattern": "money_mule",
                 "account_id": account_id,
@@ -239,11 +245,18 @@ class PatternDetector:
         return None
 
     def detect_all(self, account_id: str,
-                   baseline: AccountBaseline) -> List[Dict]:
+                   baseline: AccountBaseline,
+                   params: Optional[Dict] = None) -> List[Dict]:
+        """Run the four per-account detectors. `params` optionally
+        overrides thresholds (keys: card_testing_min, cashout_ratio);
+        defaults preserve the original behaviour exactly."""
+        p = params or {}
         out = []
-        for fn in (self.detect_card_testing,
+        for fn in (lambda a: self.detect_card_testing(
+                       a, min_count=p.get("card_testing_min", 10)),
                    lambda a: self.detect_account_takeover(a, baseline),
-                   self.detect_money_mule,
+                   lambda a: self.detect_money_mule(
+                       a, cashout_ratio=p.get("cashout_ratio", 0.7)),
                    self.detect_merchant_collusion):
             hit = fn(account_id)
             if hit:

@@ -75,6 +75,38 @@ Severity: medium.
 **Investigator note:** low severity per case, high value in aggregate —
 one colluding merchant touches many accounts.
 
+## 5. Mule ring
+
+**What it is:** several mule accounts operated together — shared
+funding sources, sometimes a shared device, money passed onward fast
+across the set. A single mule is a laundering hop; a ring is a
+laundering network, and breaking one account does not break it.
+
+**Signature in the data:** a set of 3+ accounts receiving credits from
+the same 2–3 counterparties, with at least some accounts sharing a
+device, and most accounts passing 50%+ of inflow onward via ATM within
+48 hours of their last credit.
+
+**Detector:** `RingDetector` in `fraud/rings.py` — a graph layer over
+accounts, counterparties, and devices. Each connected component of
+accounts (linked by a shared counterparty or device) scores 0–100: up
+to 40 for shared counterparties, 30 for a shared device, 30 for the
+pass-through fraction. A component flags at 70+ with 3+ accounts.
+Severity: critical.
+
+**Why this is not the single-mule detector:** the single-mule detector
+needs one account with 70%+ cash-out. Ring accounts here pass ~60%
+onward — below that line — so the single-mule detector stays silent
+and the ring layer is what catches them. The two detectors are tested
+to stay distinct in both directions.
+
+**Negative controls:** the detector must NOT flag benign fan-in.
+Payroll-style flows (many accounts paid by one shared source, normal
+spending, no shared device, no rapid cash-out) score ~13 and do not
+flag; neither does a two-account sharing, however suspicious it looks.
+Both are regression tests, because a ring detector that flags payroll
+is worse than no ring detector.
+
 ## Detector layering
 
 Per-transaction scoring (`score_transaction`: velocity 30 / amount 30 /

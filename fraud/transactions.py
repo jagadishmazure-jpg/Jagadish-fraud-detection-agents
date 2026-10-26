@@ -182,6 +182,84 @@ def inject_money_mule(txns: List[Dict], account_id: str,
     return out
 
 
+def inject_mule_ring(txns: List[Dict], account_ids: List[str],
+                     seed: int = 23) -> List[Dict]:
+    """A coordinated mule RING across several accounts.
+
+    Signature (distinct from a single mule): every ring account receives
+    credits from the SAME shared counterparties, then passes a large
+    share onward fast. Two accounts also share one device. The
+    per-account pass-through here is deliberately ~60% of inflow, below
+    the single-mule detector's 70% cash-out line, so the ring layer is
+    what catches it and the single-mule detector stays silent.
+    """
+    rng = random.Random(seed)
+    out = copy.deepcopy(txns)
+    base = datetime(2026, 9, 26, 9, 0, 0)
+    shared_cps = ["RingSource-A", "RingSource-B", "RingSource-C"]
+    shared_device = "dev-ring-shared"
+    for j, account_id in enumerate(account_ids):
+        device = shared_device if j < 2 else f"dev-{account_id}-home"
+        inflow = 0.0
+        for i, cp in enumerate(shared_cps):
+            amount = round(rng.uniform(1500, 3000), 2)
+            inflow += amount
+            out.append({
+                "txn_id": f"{account_id}-r{i:05d}",
+                "account_id": account_id,
+                "timestamp": (base + timedelta(hours=j * 2 + i * 3)).isoformat(),
+                "amount": amount,
+                "merchant": cp,
+                "merchant_category": "transfer_in",
+                "geo": "ATL",
+                "device_id": device,
+                "channel": "ecom",
+                "direction": "credit",
+            })
+        # Pass ~60% onward via ATM within hours of the last credit.
+        # Non-round amounts so the collusion detector stays silent.
+        target = inflow * 0.60
+        first = round(target * 0.55, 2)
+        second = round(target - first, 2)
+        for k, amount in enumerate((first, second)):
+            out.append(_fraud_txn(rng, account_id, 100 + k,
+                                  base + timedelta(hours=j * 2 + 10 + k),
+                                  amount, "ATM-9910", "ATL", device,
+                                  channel="atm", category="cash_out"))
+    out.sort(key=lambda t: t["timestamp"])
+    return out
+
+
+def inject_benign_fanin(txns: List[Dict], account_ids: List[str],
+                        counterparty: str, seed: int = 29) -> List[Dict]:
+    """Benign fan-in negative control: many accounts paid by ONE shared
+    source (payroll, marketplace payouts), spending normally afterwards.
+
+    No shared devices, no rapid ATM cash-out, one counterparty only.
+    A ring detector must NOT flag this, however many accounts share
+    the source.
+    """
+    rng = random.Random(seed)
+    out = copy.deepcopy(txns)
+    base = datetime(2026, 9, 15, 9, 0, 0)
+    for j, account_id in enumerate(account_ids):
+        for i in range(2):
+            out.append({
+                "txn_id": f"{account_id}-b{i:05d}",
+                "account_id": account_id,
+                "timestamp": (base + timedelta(days=i * 14)).isoformat(),
+                "amount": round(rng.uniform(1200, 3200), 2),
+                "merchant": counterparty,
+                "merchant_category": "payroll_in",
+                "geo": "ATL",
+                "device_id": f"dev-{account_id}-home",
+                "channel": "ecom",
+                "direction": "credit",
+            })
+    out.sort(key=lambda t: t["timestamp"])
+    return out
+
+
 def inject_merchant_collusion(txns: List[Dict], account_id: str,
                               seed: int = 17) -> List[Dict]:
     """Round-amount repeats at a single merchant (merchant collusion).
